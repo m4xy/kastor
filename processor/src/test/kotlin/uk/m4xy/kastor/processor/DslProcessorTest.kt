@@ -43,6 +43,33 @@ class DslProcessorTest {
     }
 
     @Test
+    fun `names used by generated code are free for elements and attributes`() {
+        val result = compile(
+            """
+            @Element("apply", function = "apply") interface Apply { val put: Int }
+            @Element("literal", function = "literal") interface Literal { @Required val let: String }
+            @Element("required", function = "required") interface Required2
+            @Element("misc", function = "mutableListOf") interface Misc { val buildMap: Int; val emptyList: Int }
+            @Element("helper", function = "buildElement") interface Helper { val literalOrNull: Int }
+            @Element("built", function = "build") interface Built
+            @Element("root", function = "root")
+            @Children(Apply::class, Literal::class, Required2::class, Misc::class, Helper::class, Built::class)
+            interface Root
+
+            val tree = RootElement.build<Unit> {
+                apply { put = 1 }
+                literal("x")
+                required()
+                mutableListOf { buildMap = 2 }
+                buildElement { literalOrNull = 3 }
+                build()
+            }
+            """,
+        )
+        assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+    }
+
+    @Test
     fun `dsl marker hides outer scopes`() {
         assertError(
             """

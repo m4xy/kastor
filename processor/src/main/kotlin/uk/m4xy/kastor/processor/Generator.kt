@@ -32,8 +32,19 @@ private object Runtime {
     val DEFERRED = ClassName(PACKAGE, "Deferred")
     val NODE = ClassName(PACKAGE, "Node")
     val CHILD = ClassName(PACKAGE, "Child")
+    val BUILDER = ClassName(PACKAGE, "Builder")
+    val BUILD_ELEMENT = MemberName(PACKAGE, "buildElement")
     val LITERAL = MemberName(PACKAGE, "literal")
+    val LITERAL_OR_NULL = MemberName(PACKAGE, "literalOrNull")
     val REQUIRED = MemberName(PACKAGE, "required")
+}
+
+// Standard library functions are referenced as members too, so KotlinPoet qualifies them where a
+// generated member has the same name. Extension functions are avoided: KotlinPoet can't qualify those.
+private object Stdlib {
+    val BUILD_MAP = MemberName("kotlin.collections", "buildMap")
+    val EMPTY_LIST = MemberName("kotlin.collections", "emptyList")
+    val MUTABLE_LIST_OF = MemberName("kotlin.collections", "mutableListOf")
 }
 
 private val C = TypeVariableName("C")
@@ -86,19 +97,12 @@ private fun TypeSpec.Builder.addAttributeMembers(
         factory.addKdoc("Sets [%N] to a value computed from the context when the tree is resolved.", attribute.propertyName)
     } else {
         val slot = slotName(attribute)
-        val getter = if (attribute.required) {
-            CodeBlock.of(
-                "return %N.%M(%L, %S).%M(%L, %S)",
-                slot, Runtime.REQUIRED, elementName, attribute.propertyName,
-                Runtime.LITERAL, elementName, attribute.propertyName,
-            )
-        } else {
-            CodeBlock.of("return %N?.%M(%L, %S)", slot, Runtime.LITERAL, elementName, attribute.propertyName)
-        }
+        val literal = if (attribute.required) Runtime.LITERAL else Runtime.LITERAL_OR_NULL
+        val getter = CodeBlock.of("return %M(%N, %L, %S)", literal, slot, elementName, attribute.propertyName)
         val setter = if (attribute.required) {
             CodeBlock.of("%N = %T(value)", slot, Runtime.VALUE)
         } else {
-            CodeBlock.of("%N = value?.let { %T(it) }", slot, Runtime.VALUE)
+            CodeBlock.of("%N = if (value == null) null else %T(value)", slot, Runtime.VALUE)
         }
         property.addModifiers(KModifier.OVERRIDE)
             .getter(FunSpec.getterBuilder().addStatement("%L", getter).build())
@@ -199,15 +203,15 @@ private fun element(info: ElementInfo): TypeSpec {
         )
         properties += PropertySpec.builder(attribute.propertyName, type).initializer(attribute.propertyName).build()
     }
-    constructor.addParameter(ParameterSpec.builder("children", childList).defaultValue("emptyList()").build())
+    constructor.addParameter(ParameterSpec.builder("children", childList).defaultValue("%M()", Stdlib.EMPTY_LIST).build())
     properties += PropertySpec.builder("children", childList, KModifier.OVERRIDE).initializer("children").build()
 
-    val attributeMap = CodeBlock.builder().beginControlFlow("return buildMap")
+    val attributeMap = CodeBlock.builder().beginControlFlow("return %M", Stdlib.BUILD_MAP)
     for (attribute in info.allAttributes) {
         if (attribute.required) {
             attributeMap.addStatement("put(%S, %N)", attribute.attributeName, attribute.propertyName)
         } else {
-            attributeMap.addStatement("%N?.let { put(%S, it) }", attribute.propertyName, attribute.attributeName)
+            attributeMap.addStatement("if (%N != null) put(%S, %N)", attribute.propertyName, attribute.attributeName, attribute.propertyName)
         }
     }
     attributeMap.endControlFlow()
@@ -239,7 +243,7 @@ private fun element(info: ElementInfo): TypeSpec {
         .addProperties(properties)
         .addProperty(
             PropertySpec.builder("tagName", STRING, KModifier.OVERRIDE)
-                .getter(FunSpec.getterBuilder().addStatement("return NAME").build())
+                .getter(FunSpec.getterBuilder().addStatement("return %T.NAME", names.element).build())
                 .build(),
         )
         .addProperty(
@@ -270,15 +274,15 @@ private fun builder(model: ElementModel): TypeSpec {
         slot.build()
     }
     val children = PropertySpec.builder("_children", MUTABLE_LIST.of(names.child.of(C)), KModifier.PRIVATE)
-        .initializer("mutableListOf()")
+        .initializer("%M()", Stdlib.MUTABLE_LIST_OF)
         .build()
 
     val arguments = CodeBlock.builder()
     for (attribute in info.allAttributes) {
         if (attribute.required) {
             arguments.addStatement(
-                "%N = %N.%M(%L, %S),",
-                attribute.propertyName, slotName(attribute), Runtime.REQUIRED, elementName, attribute.propertyName,
+                "%N = %M(%N, %L, %S),",
+                attribute.propertyName, Runtime.REQUIRED, slotName(attribute), elementName, attribute.propertyName,
             )
         } else {
             arguments.addStatement("%N = %N,", attribute.propertyName, slotName(attribute))
@@ -286,6 +290,7 @@ private fun builder(model: ElementModel): TypeSpec {
     }
     arguments.addStatement("children = _children.toList(),")
     val build = FunSpec.builder("build")
+        .addModifiers(KModifier.OVERRIDE)
         .returns(names.element.of(C))
         .addCode("return %T(\n⇥%L⇤)\n", names.element, arguments.build())
         .build()
@@ -298,6 +303,7 @@ private fun builder(model: ElementModel): TypeSpec {
         )
         .addTypeVariable(C)
         .addSuperinterface(names.scope.of(C))
+        .addSuperinterface(Runtime.BUILDER.of(names.element.of(C)))
         .primaryConstructor(constructor.build())
         .addProperties(slots)
         .addProperty(children)
@@ -342,7 +348,7 @@ private fun blockParameter(info: ElementInfo, withDefault: Boolean): ParameterSp
         .apply { if (withDefault) defaultValue("{}") }
         .build()
 
-/** `FooBuilder<C>(<required attribute slots>).apply(block).build()` for the given parameter [shape]. */
+/** `buildElement(FooBuilder<C>(<required attribute slots>), block)` for the given parameter [shape]. */
 private fun buildExpression(info: ElementInfo, shape: Shape?): CodeBlock {
     val arguments = info.requiredAttributes.map { attribute ->
         when (shape) {
@@ -351,5 +357,5 @@ private fun buildExpression(info: ElementInfo, shape: Shape?): CodeBlock {
             Shape.DEFERRED -> CodeBlock.of("null")
         }
     }
-    return CodeBlock.of("%T<%T>(%L).apply(block).build()", info.names.builder, C, arguments.joinToCode())
+    return CodeBlock.of("%M(%T<%T>(%L), block)", Runtime.BUILD_ELEMENT, info.names.builder, C, arguments.joinToCode())
 }

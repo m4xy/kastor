@@ -132,4 +132,28 @@ class GeneratedDslTest {
         }
         assertEquals(listOf("link:/a", "image"), kinds)
     }
+
+    @Test
+    fun `elements named like functions the generated code calls`() {
+        val tree = CallsElement.build<Unit> {
+            buildMap = 1
+            apply {
+                put = 2
+                apply { put = 3 }
+            }
+            literal("text") { assertEquals("text", let) }
+        }
+
+        assertEquals(
+            ResolvedNode(
+                "calls",
+                mapOf("buildMap" to 1),
+                listOf(
+                    ResolvedNode("apply", mapOf("put" to 2), listOf(ResolvedNode("apply", mapOf("put" to 3), emptyList()))),
+                    ResolvedNode("literal", mapOf("let" to "text"), emptyList()),
+                ),
+            ),
+            tree.resolve(Unit),
+        )
+    }
 }
